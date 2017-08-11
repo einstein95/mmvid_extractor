@@ -40,6 +40,10 @@ fn convert(SCIGUY: &mut File, offset: u64) {
     Command::new("ffmpeg")
         .arg("-i")
         .arg("SCIGUY.MOV")
-        .arg(format!("{}.MOV", offset))
+        .arg("-vcodec")
+        .arg("copy")
+        .arg("-acodec")
+        .arg("copy")
+        .arg(format!("{}.mov", offset))
         .output().expect("Unable to call ffmpeg!");
 }
