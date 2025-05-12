@@ -5,26 +5,68 @@ use std::fs;
 use std::fs::File;
 use std::io::SeekFrom;
 use std::process::Command;
-use byteorder::{ByteOrder, BigEndian, ReadBytesExt, WriteBytesExt};
-
-const START: u64 = 0x08EDB7; // First moov, based on manual inspection.
+use byteorder::{ByteOrder, BigEndian, ReadBytesExt};
 
 fn main() {
-    let mut SCIGUY = fs::OpenOptions::new().read(true).write(true).open("SCIGUY.MOV").expect("Unable to open SCIGUY.MOV!");
-    SCIGUY.seek(SeekFrom::Start(0)).expect("Unable to seek to start!");
-    SCIGUY.write_all(b"\x00\x00\x00\x01skip").expect("Unable to write skip atom header!");
-    let mut current: u64 = START;
-    loop {
-        SCIGUY.seek(SeekFrom::Start(current)).expect("Unable to seek to current!");
-        let atom_size = SCIGUY.read_u32::<BigEndian>().expect("Unable to read atom size!");
-        let mut atom_type: [u8; 4] = [0; 4];
-        SCIGUY.read_exact(&mut atom_type).expect("Unable to read atom type!");
-        if &atom_type == b"moov" {
-            convert(&mut SCIGUY, current);
-        }
-        current += atom_size as u64;
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() < 2 {
+        eprintln!("Usage: {} <filename>", args[0]);
+        std::process::exit(1);
     }
-    
+    let filename = &args[1];
+    let mut mmfile = fs::OpenOptions::new().read(true).write(true).open(filename).expect("Unable to open the specified file!");
+    mmfile.seek(SeekFrom::Start(0)).expect("Unable to seek to start!");
+    mmfile.write_all(b"\x00\x00\x00\x01skip").expect("Unable to write skip atom header!");
+    mmfile.seek(SeekFrom::Start(0x10)).expect("Unable to seek past header!");
+    let mut header = [0; 12];
+    mmfile.read_exact(&mut header).expect("Unable to read header!");
+
+    if &header[0..2] != b"MM" {
+        eprintln!("Invalid file format!");
+        std::process::exit(1);
+    }
+
+    let version = BigEndian::read_u16(&header[2..4]);
+    let num_offsets = BigEndian::read_u16(&header[10..12]);
+
+    println!("Version: {}, Number of file offsets: {}", version, num_offsets);
+
+    let mut offsets = Vec::new();
+    for _ in 0..num_offsets {
+        let offset = mmfile.read_u32::<BigEndian>().expect("Unable to read file offset!");
+        offsets.push(offset);
+    }
+    let filelength = mmfile.read_u32::<BigEndian>().expect("Unable to read file length!");
+    println!("File length: {:?}", filelength);
+    let mut filenames = Vec::new();
+    for _ in 0..num_offsets {
+        let mut filename = [0; 0x20];
+        mmfile.read_exact(&mut filename).expect("Unable to read filename!");
+        let filename_str = String::from_utf8_lossy(&filename);
+        filenames.push(filename_str.trim_end_matches('\0').to_string());
+    }
+
+    // for (i, &offset) in offsets.iter().enumerate() {
+    //     let next_offset = if i + 1 < offsets.len() {
+    //         offsets[i + 1]
+    //     } else {
+    //         mmfile.metadata().expect("Unable to get file metadata!").len() as u32
+    //     };
+
+    //     let length = next_offset - offset;
+    //     let mut buffer = vec![0; length as usize];
+    //     mmfile.seek(SeekFrom::Start(offset as u64)).expect("Unable to seek to file offset!");
+    //     mmfile.read_exact(&mut buffer).expect("Unable to read file data!");
+
+    //     let output_filename = format!("extracted_file_{:03}.bin", i);
+    //     let mut output_file = File::create(&output_filename).expect("Unable to create output file!");
+    //     output_file.write_all(&buffer).expect("Unable to write to output file!");
+
+    //     println!("Extracted file: {} (offset: {}, length: {})", output_filename, offset, length);
+    // }
+    for (i, &offset) in offsets.iter().enumerate() {
+        convert(&mut mmfile, offset as u64, filename, &filenames[i]);
+    }
 }
 
 fn length_to_header(length: u64) -> [u8; 8] {
@@ -33,15 +75,16 @@ fn length_to_header(length: u64) -> [u8; 8] {
     lenbytes
 }
 
-fn convert(SCIGUY: &mut File, offset: u64) {
-    SCIGUY.seek(SeekFrom::Start(8)).expect("Unable to seek to write new header!");
-    SCIGUY.write_all(&length_to_header(offset)).expect("Unable to write size to new header!");
-    SCIGUY.sync_all().expect("Unable to sync!");
+fn convert(mmfile: &mut File, offset: u64, filename: &str, output_filename: &str) {
+    println!("Converting {:?} at @{}", output_filename, offset);
+    mmfile.seek(SeekFrom::Start(8)).expect("Unable to seek to write new header!");
+    mmfile.write_all(&length_to_header(offset)).expect("Unable to write size to new header!");
+    mmfile.sync_all().expect("Unable to sync!");
     Command::new("ffmpeg")
         .arg("-i")
-        .arg("SCIGUY.MOV")
+        .arg(filename)
         .arg("-c")
         .arg("copy")
-        .arg(format!("{}.mov", offset))
+        .arg(format!("{}.mov", output_filename))
         .output().expect("Unable to call ffmpeg!");
 }
