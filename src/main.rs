@@ -18,8 +18,18 @@ fn main() {
     mmfile.seek(SeekFrom::Start(0)).expect("Unable to seek to start!");
     mmfile.write_all(b"\x00\x00\x00\x01skip").expect("Unable to write skip atom header!");
     mmfile.seek(SeekFrom::Start(0x10)).expect("Unable to seek past header!");
-    let mut header = [0; 12];
-    mmfile.read_exact(&mut header).expect("Unable to read header!");
+    
+    let (header, num_offsets) = if filename.to_lowercase().ends_with(".mmq") {
+        let mut header = vec![0; 20];
+        mmfile.read_exact(&mut header).expect("Unable to read header!");
+        let num_offsets = BigEndian::read_u16(&header[18..20]);
+        (header, num_offsets)
+    } else {
+        let mut header = vec![0; 12];
+        mmfile.read_exact(&mut header).expect("Unable to read header!");
+        let num_offsets = BigEndian::read_u16(&header[10..12]);
+        (header, num_offsets)
+    };
 
     if &header[0..2] != b"MM" {
         eprintln!("Invalid file format!");
@@ -27,8 +37,6 @@ fn main() {
     }
 
     let version = BigEndian::read_u16(&header[2..4]);
-    let num_offsets = BigEndian::read_u16(&header[10..12]);
-
     println!("Version: {}, Number of file offsets: {}", version, num_offsets);
 
     let mut offsets = Vec::new();
@@ -36,14 +44,20 @@ fn main() {
         let offset = mmfile.read_u32::<BigEndian>().expect("Unable to read file offset!");
         offsets.push(offset);
     }
-    let filelength = mmfile.read_u32::<BigEndian>().expect("Unable to read file length!");
-    println!("File length: {:?}", filelength);
+    let _filelength = mmfile.read_u32::<BigEndian>().expect("Unable to read file length!");
+    if filename.to_lowercase().ends_with(".mmq") {
+        mmfile.seek(SeekFrom::Current(0x4)).expect("Unable to seek past junk offset!");
+    }
     let mut filenames = Vec::new();
     for _ in 0..num_offsets {
         let mut filename = [0; 0x20];
         mmfile.read_exact(&mut filename).expect("Unable to read filename!");
         let filename_str = String::from_utf8_lossy(&filename);
-        filenames.push(filename_str.trim_end_matches('\0').to_string());
+        let filename_str = match filename_str.find('\0') {
+            Some(pos) => &filename_str[..pos],
+            None => &filename_str,
+        };
+        filenames.push(filename_str.to_string());
     }
 
     // for (i, &offset) in offsets.iter().enumerate() {
